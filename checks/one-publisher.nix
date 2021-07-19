@@ -67,6 +67,7 @@ let
         binaryCachePublicKeys = lib.mkForce [ "clint://@binaryCachePubKey@" ];
       };
       services.trustix = {
+        enable = true;  # Fails with and without: https://github.com/tweak/trustix/issue/24
         subscribers = [{
           protocol = "nix";
           publicKey = {

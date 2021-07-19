@@ -154,10 +154,26 @@ in nixosTest {
   };
   testScript = ''
     from os import getenv
+    from threading import Thread
 
     alisha.wait_for_file("/keys/trustix-pub")
     alisha.copy_from_vm("/keys/trustix-pub")
     clint.copy_from_host(getenv("out") + "/trustix-pub", "/keys/alisha-signing-pub")
+
+    clint.wait_for_file("/keys/cache-priv-key.pem")
+    clint_thread = Thread(
+        target=lambda: clint.succeed(
+            "${
+              mkConfig {
+                config = clientConfig;
+                trustixPubKeyPath = "/keys/alisha-signing-pub";
+                binaryCachePubKeyPath = "/keys/cache-priv-key.pem";
+              }
+            }",
+            "nixos-rebuild switch --show-trace",
+        )
+    )
+    clint_thread.start()
 
     alisha.succeed(
         "${
@@ -170,17 +186,7 @@ in nixosTest {
     )
     alisha.succeed("nix-build '<nixpkgs>' -A hello")
 
-    clint.wait_for_file("/keys/cache-priv-key.pem")
-    clint.succeed(
-        "${
-          mkConfig {
-            config = clientConfig;
-            trustixPubKeyPath = "/keys/alisha-signing-pub";
-            binaryCachePubKeyPath = "/keys/cache-priv-key.pem";
-          }
-        }",
-        "nixos-rebuild switch --show-trace",
-    )
+    clint_thread.join()
     clint.succeed("nix-build '<nixpkgs>' -A hello")
     clint.fail("grep hello /var/log/local-builds")
   '';

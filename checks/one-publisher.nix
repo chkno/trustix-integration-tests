@@ -51,6 +51,10 @@ let
     }
   '';
 
+  log-local-builds = writeShellScript "log-local-builds" ''
+    echo "$OUT_PATHS" >> /var/log/local-builds
+  '';
+
   clientConfig = writeText "clientConfig" ''
     { lib, ... }: {
       services.trustix-nix-cache = {
@@ -76,7 +80,9 @@ let
           percentage.minimum = 66;
         };
       };
-
+      nix.extraOptions = '''
+        post-build-hook = ${log-local-builds}
+      ''';
     }
   '';
 
@@ -176,5 +182,6 @@ in nixosTest {
         "nixos-rebuild switch --show-trace",
     )
     clint.succeed("nix-build '<nixpkgs>' -A hello")
+    clint.fail("grep hello /var/log/local-builds")
   '';
 }

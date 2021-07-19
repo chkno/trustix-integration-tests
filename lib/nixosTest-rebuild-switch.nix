@@ -9,7 +9,8 @@
     (modulesPath + "/virtualisation/qemu-vm.nix")
   ];
 
-  nix.binaryCaches = lib.mkForce [ ];
+  nix.binaryCaches = lib.mkOverride 90 [ ];
+  nix.binaryCachePublicKeys = lib.mkOverride 90 [ ];
   nix.extraOptions = ''
     hashed-mirrors =
     connect-timeout = 1

@@ -18,6 +18,19 @@ let
     }
   '';
 
+  binaryCacheKeyConfig = writeText "binaryCacheKeyConfig" ''
+    { pkgs, ... }: {
+      config = {
+        system.activationScripts.trustix-create-key = '''
+          if [[ ! -e /keys/cache-priv-key.pem ]];then
+            mkdir -p /keys
+            ''${pkgs.nix}/bin/nix-store --generate-binary-cache-key clint /keys/cache-priv-key.pem /keys/cache-pub-key.pem
+          fi
+        ''';
+      };
+    }
+  '';
+
   publisherConfig = writeText "publisherConfig" ''
     {
       services.trustix = {
@@ -31,28 +44,61 @@ let
           protocol = "nix";
           publicKey = {
             type = "ed25519";
-            pub = "@pubkey@";
+            pub = "@trustixPubKey@";
           };
         }];
       };
     }
   '';
 
-  mkConfig = writeShellScript "mkConfig" ''
-    set -euxo pipefail
-    mkdir -p /etc/nixos
-    ${gnused}/bin/sed "s,@pubkey@,$(< /keys/trustix-pub)," ${publisherConfig} > /etc/nixos/publisher.nix
-    cat > /etc/nixos/configuration.nix <<EOF
-    {
-      imports = [
-        ${../lib/nixosTest-rebuild-switch.nix}
-        ${trustixModule}
-        ${trustixKeyConfig}
-        ./publisher.nix
-      ];
+  clientConfig = writeText "clientConfig" ''
+    { lib, ... }: {
+      services.trustix-nix-cache = {
+        enable = true;
+        private-key = "/keys/cache-priv-key.pem";
+        port = 9001;
+      };
+      nix = {
+        binaryCaches = lib.mkForce [ "http//localhost:9001" ];
+        binaryCachePublicKeys = lib.mkForce [ "clint://@binaryCachePubKey@" ];
+      };
+      services.trustix = {
+        subscribers = [{
+          protocol = "nix";
+          publicKey = {
+            type = "ed25519";
+            pub = "@trustixPubKey@";
+          };
+        }];
+        remotes = [ "grpc+http://alisha/" ];
+        deciders.nix = {
+          engine = "percentage";
+          percentage.minimum = 66;
+        };
+      };
+
     }
-    EOF
   '';
+
+  mkConfig =
+    { config, trustixPubKeyPath, binaryCachePubKeyPath ? "/dev/null", }:
+    writeShellScript "mkConfig" ''
+      set -euxo pipefail
+      mkdir -p /etc/nixos
+      ${gnused}/bin/sed "
+        s,@trustixPubKey@,$(< ${trustixPubKeyPath}),
+        s,@binaryCachePubKey@,$(< ${binaryCachePubKeyPath}),
+        " ${config} > /etc/nixos/local.nix
+      cat > /etc/nixos/configuration.nix <<EOF
+      {
+        imports = [
+          ${../lib/nixosTest-rebuild-switch.nix}
+          ${trustixModule}
+          ./local.nix
+        ];
+      }
+      EOF
+    '';
 
 in nixosTest {
   name = "one-publisher";
@@ -78,13 +124,57 @@ in nixosTest {
       virtualisation.diskSize = "1000";
       virtualisation.memorySize = "1G";
     };
+    clint = { pkgs, ... }: {
+      imports = [
+        ../lib/nixosTest-rebuild-switch.nix
+        trustixModule
+        "${binaryCacheKeyConfig}"
+      ];
+      system.extraDependencies = [
+        pkgs.hello.inputDerivation
+        pkgs.remarshal # For building trustix-config.toml
+        (nixos {
+          imports = [
+            ../lib/nixosTest-rebuild-switch.nix
+            trustixModule
+            "${binaryCacheKeyConfig}"
+            "${clientConfig}"
+          ];
+        }).toplevel
+      ];
+      virtualisation.diskSize = "1000";
+      virtualisation.memorySize = "1G";
+    };
   };
   testScript = ''
+    from os import getenv
+
     alisha.wait_for_file("/keys/trustix-pub")
+    alisha.copy_from_vm("/keys/trustix-pub")
+    clint.copy_from_host(getenv("out") + "/trustix-pub", "/keys/alisha-signing-pub")
+
     alisha.succeed(
-        "${mkConfig}",
+        "${
+          mkConfig {
+            config = publisherConfig;
+            trustixPubKeyPath = "/keys/trustix-pub";
+          }
+        }",
         "nixos-rebuild switch --show-trace",
     )
     alisha.succeed("nix-build '<nixpkgs>' -A hello")
+
+    clint.wait_for_file("/keys/cache-priv-key.pem")
+    clint.succeed(
+        "${
+          mkConfig {
+            config = clientConfig;
+            trustixPubKeyPath = "/keys/alisha-signing-pub";
+            binaryCachePubKeyPath = "/keys/cache-priv-key.pem";
+          }
+        }",
+        "nixos-rebuild switch --show-trace",
+    )
+    clint.succeed("nix-build '<nixpkgs>' -A hello")
   '';
 }
